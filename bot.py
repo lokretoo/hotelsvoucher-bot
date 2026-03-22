@@ -22,9 +22,28 @@ client = OpenAI()
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Добро пожаловать в Hotels Voucher Bot! 🏨\n\n"
-        "Я стал намного умнее. Просто пришлите мне ЛЮБЫЕ данные о бронировании (копипаст с сайта, письмо или просто текст).\n\n"
-        "Я сам всё пойму, посчитаю даты и сделаю красивый PDF-ваучер. Если цены нет — её не будет в документе. Попробуйте!"
+        "Пришлите мне любые данные о бронировании (текст, копипаст), и я сразу сделаю PDF-ваучер.\n\n"
+        "Я автоматически определю все детали, посчитаю даты и уберу лишние поля (например, цену, если она не указана)."
     )
+
+def clean_text(text):
+    """Replace or remove characters that are not supported by standard PDF fonts."""
+    if not text: return ""
+    # Replace common problematic characters
+    replacements = {
+        "•": "-",
+        "★": "*",
+        "–": "-",
+        "—": "-",
+        "“": '"',
+        "”": '"',
+        "‘": "'",
+        "’": "'"
+    }
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+    # Ensure it's latin-1 compatible for standard FPDF fonts
+    return text.encode('latin-1', 'replace').decode('latin-1')
 
 async def generate_voucher_pdf(data):
     pdf = FPDF()
@@ -36,10 +55,11 @@ async def generate_voucher_pdf(data):
     pdf.rect(0, 0, 210, 30, 'F')
     pdf.set_text_color(255, 255, 255) # White
     pdf.set_font("Helvetica", "B", 16)
-    pdf.cell(0, 10, txt=data.get("hotel_name", "Hotel Booking"), ln=True, align="C")
+    hotel_name = clean_text(data.get("hotel_name", "Hotel Booking"))
+    pdf.cell(0, 10, text=hotel_name, ln=True, align="C")
     pdf.set_font("Helvetica", "", 10)
-    conf_num = data.get("confirmation", "N/A")
-    pdf.cell(0, 10, txt=f"Confirmation Number: {conf_num}", ln=True, align="C")
+    conf_num = clean_text(data.get("confirmation", "N/A"))
+    pdf.cell(0, 10, text=f"Confirmation Number: {conf_num}", ln=True, align="C")
     pdf.ln(5)
 
     pdf.set_text_color(0, 0, 0) # Black
@@ -50,13 +70,14 @@ async def generate_voucher_pdf(data):
         pdf.set_fill_color(36, 47, 65)
         pdf.set_text_color(255, 255, 255)
         pdf.set_font("Helvetica", "B", 12)
-        pdf.cell(0, 10, txt=title, ln=True, fill=True)
+        pdf.cell(0, 10, text=title, ln=True, fill=True)
         pdf.set_text_color(0, 0, 0)
         pdf.set_font("Helvetica", "", 10)
         for label, value in fields:
-            if value and value != "N/A":
-                pdf.cell(40, 7, txt=f"{label}:", border=0)
-                pdf.cell(0, 7, txt=str(value), ln=True)
+            if value and str(value).lower() != "none" and str(value) != "N/A":
+                pdf.cell(40, 7, text=f"{label}:", border=0)
+                cleaned_val = clean_text(str(value))
+                pdf.cell(0, 7, text=cleaned_val, ln=True)
         pdf.ln(5)
 
     # 1. Property Info
@@ -86,21 +107,21 @@ async def generate_voucher_pdf(data):
     if data.get("meal_plan"): room_fields.append(("Meal Plan", data["meal_plan"]))
     add_section("ROOM & SERVICES", room_fields)
 
-    # 5. Payment Info (ONLY if price exists)
-    if data.get("price") and data["price"].lower() != "none":
+    # 5. Payment Info
+    if data.get("price") and str(data["price"]).lower() != "none":
         add_section("PAYMENT INFORMATION", [("Amount Paid", data["price"])])
 
     # Important Information
     pdf.set_font("Helvetica", "B", 12)
-    pdf.cell(0, 10, txt="Important Information", ln=True)
+    pdf.cell(0, 10, text="Important Information", ln=True)
     pdf.set_font("Helvetica", "", 10)
     info_text = (
-        "• Please present this voucher upon arrival at the hotel.\n"
-        "• A valid photo ID and credit card may be required at check-in.\n"
-        "• Check-in time is as indicated above. Early check-in is subject to availability.\n"
-        "• Late check-out requests should be made directly with the hotel."
+        "- Please present this voucher upon arrival at the hotel.\n"
+        "- A valid photo ID and credit card may be required at check-in.\n"
+        "- Check-in time is as indicated above. Early check-in is subject to availability.\n"
+        "- Late check-out requests should be made directly with the hotel."
     )
-    pdf.multi_cell(0, 5, txt=info_text)
+    pdf.multi_cell(0, 5, text=info_text)
 
     file_path = "voucher.pdf"
     pdf.output(file_path)
@@ -128,15 +149,13 @@ async def parse_with_ai(text):
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
-    if not text or len(text) < 10:
+    if not text or len(text) < 5:
         return
 
-    await update.message.reply_text("🧠 Анализирую данные с помощью ИИ...")
+    await update.message.reply_text("🧠 Анализирую данные...")
     
     try:
         data = await parse_with_ai(text)
-        logger.info(f"AI Parsed Data: {data}")
-        
         pdf_path = await generate_voucher_pdf(data)
         
         with open(pdf_path, 'rb') as pdf_file:
@@ -144,10 +163,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             filename = f"Voucher_{hotel_display.replace(' ', '_')}.pdf"
             await update.message.reply_document(document=pdf_file, filename=filename)
             
-        await update.message.reply_text("✨ Ваш ваучер готов! Можете прислать любые другие данные.")
+        await update.message.reply_text("✨ Готово! Присылайте следующие данные.")
     except Exception as e:
         logger.error(f"Error: {e}")
-        await update.message.reply_text("❌ Ошибка при обработке данных. Попробуйте скопировать текст еще раз.")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:100]}. Попробуйте еще раз.")
 
 def main():
     if not TOKEN:
@@ -157,7 +176,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
-    logger.info("Bot is starting with AI parsing mode...")
+    logger.info("Bot is starting...")
     app.run_polling()
 
 if __name__ == "__main__":
